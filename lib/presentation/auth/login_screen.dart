@@ -78,10 +78,11 @@ class _LoginScreenState extends State<LoginScreen>
     try {
       final canCheck = await _localAuth.canCheckBiometrics;
       final isSupported = await _localAuth.isDeviceSupported();
-      if (mounted)
+      if (mounted) {
         setState(
           () => _biometricsAvailable = !kIsWeb && canCheck && isSupported,
         );
+      }
     } catch (e) {
       debugPrint('Biometrics check error: $e');
     }
@@ -808,8 +809,9 @@ class _LoginScreenState extends State<LoginScreen>
                                 controller: _nameController,
                                 icon: Icons.person_outline,
                                 validator: (v) {
-                                  if (!_isSignIn && (v == null || v.isEmpty))
+                                  if (!_isSignIn && (v == null || v.isEmpty)) {
                                     return 'Enter your full name';
+                                  }
                                   return null;
                                 },
                               ),
@@ -1050,10 +1052,12 @@ class _LoginScreenState extends State<LoginScreen>
                               icon: Icons.email_outlined,
                               keyboardType: TextInputType.emailAddress,
                               validator: (v) {
-                                if (v == null || v.isEmpty)
+                                if (v == null || v.isEmpty) {
                                   return 'Enter your email';
-                                if (!v.contains('@'))
+                                }
+                                if (!v.contains('@')) {
                                   return 'Enter a valid email';
+                                }
                                 return null;
                               },
                             ),
@@ -1073,8 +1077,9 @@ class _LoginScreenState extends State<LoginScreen>
                                 validator: (v) {
                                   if (!_isSignIn &&
                                       !_isStudent &&
-                                      (v == null || v.isEmpty))
+                                      (v == null || v.isEmpty)) {
                                     return 'Enter the faculty secret code';
+                                  }
                                   return null;
                                 },
                               ),
@@ -1091,10 +1096,12 @@ class _LoginScreenState extends State<LoginScreen>
                                 () => _passwordVisible = !_passwordVisible,
                               ),
                               validator: (v) {
-                                if (v == null || v.isEmpty)
+                                if (v == null || v.isEmpty) {
                                   return 'Enter your password';
-                                if (v.length < 6)
+                                }
+                                if (v.length < 6) {
                                   return 'At least 6 characters';
+                                }
                                 return null;
                               },
                             ),
@@ -1114,10 +1121,12 @@ class _LoginScreenState extends State<LoginScreen>
                                 ),
                                 validator: (v) {
                                   if (!_isSignIn) {
-                                    if (v == null || v.isEmpty)
+                                    if (v == null || v.isEmpty) {
                                       return 'Confirm your password';
-                                    if (v != _passwordController.text)
+                                    }
+                                    if (v != _passwordController.text) {
                                       return 'Passwords do not match';
+                                    }
                                   }
                                   return null;
                                 },

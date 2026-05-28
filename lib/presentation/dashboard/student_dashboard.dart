@@ -10,6 +10,7 @@ import '../../core/theme/theme_extensions.dart';
 import '../../core/constants/app_colors.dart';
 import '../courses/offline_files_screen.dart';
 import '../profile/edit_profile_screen.dart';
+import '../profile/unity_avatar_customization_screen.dart';
 import '../notifications/notifications_screen.dart';
 
 class StudentDashboard extends ConsumerStatefulWidget {
@@ -609,6 +610,30 @@ class _StudentDashboardState extends ConsumerState<StudentDashboard>
       }
     } catch (e) {
       debugPrint('Leave class error: $e');
+    }
+  }
+
+  Future<void> _openAvatarCustomization() async {
+    final updated = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const UnityAvatarCustomizationScreen(),
+      ),
+    );
+
+    if (updated == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Avatar updated successfully!'),
+          backgroundColor: Colors.green.shade700,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+      );
+
+      await _loadUser();
     }
   }
 
@@ -2298,7 +2323,65 @@ class _StudentDashboardState extends ConsumerState<StudentDashboard>
             ),
           ),
 
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
+
+          // ─── Customize Avatar Button ─────────────────────
+          GestureDetector(
+            onTap: _openAvatarCustomization,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+              decoration: BoxDecoration(
+                color: context.cardColor,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: context.borderColor),
+                boxShadow: context.isDark
+                    ? []
+                    : [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.04),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(
+                      Icons.person_rounded,
+                      color: AppColors.primary,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Customize Avatar',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: context.isDark ? Colors.white : const Color(0xFF0D1B4B),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: context.textSecondary,
+                    size: 22,
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 16),
 
           // ─── Badges Section (Proper Icon replaces emoji) ───
           _buildProfileSection(

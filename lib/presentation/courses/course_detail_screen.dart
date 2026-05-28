@@ -13,6 +13,7 @@ import 'file_viewer_screen.dart';
 import 'post_detail_screen.dart';
 import 'assignment_detail_screen.dart';
 import 'class_settings_screen.dart';
+import 'dart:async';
 
 class CourseDetailScreen extends ConsumerStatefulWidget {
   final Map<String, dynamic> course;
@@ -212,6 +213,46 @@ class _CourseDetailScreenState extends ConsumerState<CourseDetailScreen>
       debugPrint('Comment submit error: $e');
     } finally {
       if (mounted) setState(() => _submittingComment[postId] = false);
+    }
+  }
+
+
+  Future<void> _createOrUpdateAssessmentForPost({
+    required Map<String, dynamic> postData,
+    required String title,
+    required String type,
+  }) async {
+    if (type != 'assignment') return;
+
+    final postId = postData['id']?.toString();
+    final courseId = postData['course_id'] ?? widget.course['id'];
+
+    if (postId == null || postId.isEmpty || courseId == null) {
+      throw Exception('Cannot create assessment: missing post ID or course ID.');
+    }
+
+    final existingAssessment = await _supabase
+        .from('assessments')
+        .select('id')
+        .eq('id', postId)
+        .maybeSingle();
+
+    if (existingAssessment == null) {
+      await _supabase.from('assessments').insert({
+        'id': postId,
+        'course_id': courseId,
+        'title': title,
+        'type': 'assignment',
+      });
+    } else {
+      await _supabase
+          .from('assessments')
+          .update({
+            'course_id': courseId,
+            'title': title,
+            'type': 'assignment',
+          })
+          .eq('id', postId);
     }
   }
 
@@ -513,7 +554,19 @@ class _CourseDetailScreenState extends ConsumerState<CourseDetailScreen>
     final instructionsController = TextEditingController(
       text: existing?['instructions'] ?? '',
     );
+    final pointsController = TextEditingController(
+      text: (existing?['points'] ?? 100).toString(),
+    );
     String? selectedTopicId = existing?['topic_id'];
+
+    // ─── Assignment deadline state ───
+    DateTime? assignmentDueDate;
+    TimeOfDay? assignmentDueTime;
+    if (existing?['due_date'] != null) {
+      final due = DateTime.parse(existing!['due_date']);
+      assignmentDueDate = due;
+      assignmentDueTime = TimeOfDay(hour: due.hour, minute: due.minute);
+    }
 
     // ─── Scheduling State (3d_meet) ───
     DateTime? scheduledDate;
@@ -724,6 +777,108 @@ class _CourseDetailScreenState extends ConsumerState<CourseDetailScreen>
                         const SizedBox(height: 16),
                       ],
 
+                      if (postType == 'assignment') ...[
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFF6B35).withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: const Color(0xFFFF6B35).withValues(alpha: 0.25),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  const Icon(
+                                    Icons.event_available_outlined,
+                                    color: Color(0xFFFF6B35),
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Text(
+                                    'Assignment Settings',
+                                    style: TextStyle(
+                                      fontFamily: 'Poppins',
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w700,
+                                      color: context.textPrimary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 16),
+                              TextFormField(
+                                controller: pointsController,
+                                keyboardType: TextInputType.number,
+                                style: TextStyle(
+                                  fontFamily: 'Poppins',
+                                  color: context.textPrimary,
+                                  fontSize: 14,
+                                ),
+                                decoration: InputDecoration(
+                                  labelText: 'Maximum Points',
+                                  hintText: 'e.g. 100',
+                                  prefixIcon: Icon(
+                                    Icons.grade_outlined,
+                                    color: context.textHint,
+                                    size: 20,
+                                  ),
+                                  filled: true,
+                                  fillColor: context.cardColor,
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: BorderSide(color: context.borderColor),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: BorderSide(color: context.borderColor),
+                                  ),
+                                  focusedBorder: const OutlineInputBorder(
+                                    borderRadius: BorderRadius.all(Radius.circular(12)),
+                                    borderSide: BorderSide(
+                                      color: Color(0xFFFF6B35),
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              _buildDateTimePicker(
+                                context: context,
+                                date: assignmentDueDate,
+                                time: assignmentDueTime,
+                                onDateTap: () async {
+                                  final p = await showDatePicker(
+                                    context: context,
+                                    initialDate: assignmentDueDate ?? DateTime.now(),
+                                    firstDate: DateTime.now(),
+                                    lastDate: DateTime.now().add(
+                                      const Duration(days: 365),
+                                    ),
+                                  );
+                                  if (p != null) {
+                                    setSheet(() => assignmentDueDate = p);
+                                  }
+                                },
+                                onTimeTap: () async {
+                                  final t = await showTimePicker(
+                                    context: context,
+                                    initialTime: assignmentDueTime ?? TimeOfDay.now(),
+                                  );
+                                  if (t != null) {
+                                    setSheet(() => assignmentDueTime = t);
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+
                       _buildTopicPicker(
                         selectedTopicId,
                         (val) => setSheet(() => selectedTopicId = val),
@@ -894,6 +1049,13 @@ class _CourseDetailScreenState extends ConsumerState<CourseDetailScreen>
                                       assessmentUrl == null)
                                     error =
                                         "Please attach Assignment Instructions (PDF)";
+                                  else if (postType == 'assignment' &&
+                                      (int.tryParse(pointsController.text.trim()) == null ||
+                                          int.parse(pointsController.text.trim()) <= 0))
+                                    error = "Please enter valid maximum points";
+                                  else if (postType == 'assignment' &&
+                                      (assignmentDueDate == null || assignmentDueTime == null))
+                                    error = "Please set the assignment deadline date and time";
                                   else if (postType == '3d_meet') {
                                     if (materialUrl == null) {
                                       error =
@@ -908,16 +1070,34 @@ class _CourseDetailScreenState extends ConsumerState<CourseDetailScreen>
                                   }
 
                                   if (error != null) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text(
-                                          error,
-                                          style: const TextStyle(
+                                    await showDialog(
+                                      context: context,
+                                      builder: (dialogContext) => AlertDialog(
+                                        backgroundColor: context.surfaceColor,
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(18),
+                                        ),
+                                        title: Text(
+                                          'Missing Information',
+                                          style: TextStyle(
                                             fontFamily: 'Poppins',
+                                            fontWeight: FontWeight.w700,
+                                            color: context.textPrimary,
                                           ),
                                         ),
-                                        backgroundColor: AppColors.error,
-                                        behavior: SnackBarBehavior.floating,
+                                        content: Text(
+                                          error!,
+                                          style: TextStyle(
+                                            fontFamily: 'Poppins',
+                                            color: context.textSecondary,
+                                          ),
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(dialogContext),
+                                            child: const Text('OK'),
+                                          ),
+                                        ],
                                       ),
                                     );
                                     return;
@@ -928,6 +1108,20 @@ class _CourseDetailScreenState extends ConsumerState<CourseDetailScreen>
                                     final userId =
                                         _supabase.auth.currentUser?.id;
                                     DateTime? finalScheduledTime;
+                                    DateTime? finalAssignmentDueDate;
+                                    final assignmentPoints =
+                                        int.tryParse(pointsController.text.trim()) ?? 100;
+
+                                    if (postType == 'assignment') {
+                                      finalAssignmentDueDate = DateTime(
+                                        assignmentDueDate!.year,
+                                        assignmentDueDate!.month,
+                                        assignmentDueDate!.day,
+                                        assignmentDueTime!.hour,
+                                        assignmentDueTime!.minute,
+                                      );
+                                    }
+
                                     if (postType == '3d_meet') {
                                       finalScheduledTime = DateTime(
                                         scheduledDate!.year,
@@ -952,36 +1146,62 @@ class _CourseDetailScreenState extends ConsumerState<CourseDetailScreen>
                                             'material_name': materialName,
                                             'assessment_url': assessmentUrl,
                                             'assessment_name': assessmentName,
-                                            'scheduled_time': finalScheduledTime
-                                                ?.toIso8601String(),
+                                            'scheduled_time': finalScheduledTime?.toUtc().toIso8601String(),
                                             'duration_minutes':
                                                 postType == '3d_meet'
                                                 ? durationMinutes
                                                 : null,
+                                            'points': postType == 'assignment'
+                                                ? assignmentPoints
+                                                : null,
+                                            'due_date': postType == 'assignment'
+                                                ? finalAssignmentDueDate?.toIso8601String()
+                                                : null,
                                           })
                                           .eq('id', existing['id']);
+
+                                      await _createOrUpdateAssessmentForPost(
+                                        postData: existing,
+                                        title: title,
+                                        type: postType,
+                                      );
                                     } else {
                                       // If 'existing' is null, we create a NEW post (INSERT)
-                                      await _supabase.from('posts').insert({
-                                        'course_id': widget.course['id'],
-                                        'instructor_id': userId,
-                                        'type': postType,
-                                        'title': title,
-                                        'instructions': desc,
-                                        'topic_id': selectedTopicId,
-                                        'material_url': materialUrl,
-                                        'material_name': materialName,
-                                        'assessment_url': assessmentUrl,
-                                        'assessment_name': assessmentName,
-                                        'scheduled_time': finalScheduledTime
-                                            ?.toIso8601String(),
-                                        'duration_minutes':
-                                            postType == '3d_meet'
-                                            ? durationMinutes
-                                            : null,
-                                        'created_at': DateTime.now()
-                                            .toIso8601String(),
-                                      });
+                                      final postData = await _supabase
+                                          .from('posts')
+                                          .insert({
+                                            'course_id': widget.course['id'],
+                                            'instructor_id': userId,
+                                            'type': postType,
+                                            'title': title,
+                                            'instructions': desc,
+                                            'topic_id': selectedTopicId,
+                                            'material_url': materialUrl,
+                                            'material_name': materialName,
+                                            'assessment_url': assessmentUrl,
+                                            'assessment_name': assessmentName,
+                                            'scheduled_time': finalScheduledTime?.toUtc().toIso8601String(),
+                                            'duration_minutes':
+                                                postType == '3d_meet'
+                                                ? durationMinutes
+                                                : null,
+                                            'points': postType == 'assignment'
+                                                ? assignmentPoints
+                                                : null,
+                                            'due_date': postType == 'assignment'
+                                                ? finalAssignmentDueDate?.toIso8601String()
+                                                : null,
+                                            'created_at': DateTime.now()
+                                                .toIso8601String(),
+                                          })
+                                          .select()
+                                          .single();
+
+                                      await _createOrUpdateAssessmentForPost(
+                                        postData: Map<String, dynamic>.from(postData),
+                                        title: title,
+                                        type: postType,
+                                      );
                                     }
 
                                     if (mounted) {
@@ -1451,13 +1671,34 @@ class _CourseDetailScreenState extends ConsumerState<CourseDetailScreen>
   // ════════════════════════════════════════════════════════
 
   String _getScheduleStatus(String? scheduledTime) {
-    if (scheduledTime == null) return 'none';
-    final scheduled = DateTime.parse(scheduledTime);
+  if (scheduledTime == null) return 'none';
+  
+  try {
+    // 1. Parse and convert back to YOUR LOCAL TIME
+    final scheduled = DateTime.parse(scheduledTime).toLocal(); 
+    
+    // 2. Get current device time
     final now = DateTime.now();
-    if (now.isBefore(scheduled)) return 'upcoming';
-    if (now.isAfter(scheduled.add(const Duration(hours: 2)))) return 'ended';
-    return 'live';
+    
+    final int diff = now.difference(scheduled).inMinutes;
+
+    if (diff < 0) return 'upcoming';
+    if (diff >= 0 && diff <= 15) return 'live';
+    return 'ended';
+  } catch (e) {
+    return 'none';
   }
+}
+
+String _formatGracePeriodEndTime(String scheduledTime) {
+  // ADD .toLocal() HERE
+  final dt = DateTime.parse(scheduledTime).toLocal().add(const Duration(minutes: 15));
+  
+  final hour = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
+  final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+  final min = dt.minute.toString().padLeft(2, '0');
+  return '$hour:$min $ampm';
+}
 
   String _formatDate(String dateStr) {
     final date = DateTime.parse(dateStr);
@@ -1484,31 +1725,17 @@ class _CourseDetailScreenState extends ConsumerState<CourseDetailScreen>
   }
 
   String _formatScheduleTime(String? scheduledTime) {
-    if (scheduledTime == null) return '';
-    final dt = DateTime.parse(scheduledTime);
-    final months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    final hour = dt.hour > 12
-        ? dt.hour - 12
-        : dt.hour == 0
-        ? 12
-        : dt.hour;
-    final ampm = dt.hour >= 12 ? 'PM' : 'AM';
-    final min = dt.minute.toString().padLeft(2, '0');
-    return '${months[dt.month - 1]} ${dt.day}, $hour:$min $ampm';
-  }
+  if (scheduledTime == null) return '';
+  
+  // ADD .toLocal() HERE
+  final dt = DateTime.parse(scheduledTime).toLocal(); 
+  
+  final months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  final hour = dt.hour > 12 ? dt.hour - 12 : dt.hour == 0 ? 12 : dt.hour;
+  final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+  final min = dt.minute.toString().padLeft(2, '0');
+  return '${months[dt.month - 1]} ${dt.day}, $hour:$min $ampm';
+}
 
   IconData _getPostIcon(String type) {
     switch (type) {
@@ -2633,80 +2860,37 @@ class _CourseDetailScreenState extends ConsumerState<CourseDetailScreen>
   }
 
   Widget _buildJoin3DButton(String scheduledTime) {
-    final status = _getScheduleStatus(scheduledTime);
-    final isLive = status == 'live';
-    final isUpcoming = status == 'upcoming';
-    final Color btnColor = isLive ? const Color(0xFF22C55E) : Colors.grey;
+  final status = _getScheduleStatus(scheduledTime);
+  final isLive = status == 'live';
+  final isUpcoming = status == 'upcoming';
+  final Color btnColor = isLive ? const Color(0xFF22C55E) : Colors.grey;
 
-    // Proper icon instead of 🎮
-    final icon = isLive
-        ? Icons.videogame_asset_rounded
-        : Icons.videogame_asset_outlined;
-
-    return GestureDetector(
-      onTap: isLive
-          ? () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Launching 3D Classroom...'),
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
-            }
-          : null,
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 14),
-        decoration: BoxDecoration(
-          color: isLive ? btnColor : btnColor.withValues(alpha: 0.5),
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: isLive
-              ? [
-                  BoxShadow(
-                    color: btnColor.withValues(alpha: 0.3),
-                    blurRadius: 12,
-                    offset: const Offset(0, 4),
-                  ),
-                ]
-              : [],
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: Colors.white, size: 20),
-            const SizedBox(width: 10),
-            Column(
-              children: [
-                Text(
-                  isLive
-                      ? 'Join 3D Classroom'
-                      : isUpcoming
-                      ? '3D Meet Scheduled'
-                      : 'Session Ended',
-                  style: const TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                  ),
-                ),
-                Text(
-                  isLive
-                      ? 'Session is live now!'
-                      : _formatScheduleTime(scheduledTime),
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 11,
-                    color: Colors.white.withValues(alpha: 0.8),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
+  return GestureDetector(
+    onTap: isLive ? () { /* Your Join Logic */ } : null,
+    child: Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      decoration: BoxDecoration(
+        color: isLive ? btnColor : btnColor.withOpacity(0.5),
+        borderRadius: BorderRadius.circular(16),
       ),
-    );
-  }
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(isLive ? Icons.videogame_asset : Icons.videogame_asset_outlined, color: Colors.white),
+          const SizedBox(width: 10),
+          Column(
+            children: [
+              Text(isLive ? 'Join 3D Classroom' : isUpcoming ? 'Scheduled' : 'Ended',
+                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 
   Widget _buildCommentsSection(String postId, List<Map<String, dynamic>> comments) {
     // 1. Use the Map-based state instead of singular variables

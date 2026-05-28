@@ -105,12 +105,43 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
       final userId = _supabase.auth.currentUser?.id;
       if (userId == null) return;
 
-      final subData = await _supabase
+      final assessmentId = await _getOrCreateAssessmentId();
+
+      final submissionsData = await _supabase
           .from('submissions')
           .select()
-          .eq('assessment_id', widget.post['id'])
+          .eq('assessment_id', assessmentId)
           .eq('student_id', userId)
-          .maybeSingle();
+          .order('submitted_at', ascending: false, nullsFirst: false)
+          .order('created_at', ascending: false, nullsFirst: false);
+
+      Map<String, dynamic>? bestSubmission;
+      for (final item in submissionsData) {
+        final row = Map<String, dynamic>.from(item as Map);
+        final hasSubmittedAt = row['submitted_at'] != null &&
+            row['submitted_at'].toString().trim().isNotEmpty;
+        final hasFile = row['file_url'] != null &&
+            row['file_url'].toString().trim().isNotEmpty;
+
+        // Priority 1: turned-in row with file
+        if (hasSubmittedAt && hasFile) {
+          bestSubmission = row;
+          break;
+        }
+
+        // Priority 2: any turned-in row
+        if (bestSubmission == null && hasSubmittedAt) {
+          bestSubmission = row;
+        }
+
+        // Priority 3: draft row with attached file
+        if (bestSubmission == null && hasFile) {
+          bestSubmission = row;
+        }
+
+        // Priority 4: latest row
+        bestSubmission ??= row;
+      }
 
       final commentData = await _supabase
           .from('private_comments')
@@ -121,9 +152,7 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
 
       if (mounted) {
         setState(() {
-          _mySubmission = subData != null
-              ? Map<String, dynamic>.from(subData)
-              : null;
+          _mySubmission = bestSubmission;
           _myWorkFileUrl = _mySubmission?['file_url'];
           _myWorkFileName = _mySubmission?['file_name'];
           _myPrivateComments = List<Map<String, dynamic>>.from(commentData);
@@ -131,6 +160,7 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
         });
       }
     } catch (e) {
+      debugPrint('Load my submission error: $e');
       if (mounted) setState(() => _isLoadingStudents = false);
     }
   }
@@ -154,24 +184,119 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
         studentsList = List<Map<String, dynamic>>.from(studentsData);
       }
 
+      final assessmentId = await _getOrCreateAssessmentId();
+
       final submissionsData = await _supabase
           .from('submissions')
           .select()
-          .eq('assessment_id', widget.post['id']);
+          .eq('assessment_id', assessmentId)
+          .order('submitted_at', ascending: false, nullsFirst: false)
+          .order('created_at', ascending: false, nullsFirst: false);
+
       final submissionsMap = <String, Map<String, dynamic>>{};
-      for (final s in submissionsData) {
-        submissionsMap[s['student_id']] = Map<String, dynamic>.from(s);
+      for (final item in submissionsData) {
+        final row = Map<String, dynamic>.from(item as Map);
+        final studentId = row['student_id']?.toString();
+        if (studentId == null || studentId.isEmpty) continue;
+
+        final current = submissionsMap[studentId];
+        if (current == null) {
+          submissionsMap[studentId] = row;
+          continue;
+        }
+
+        final rowTurnedIn = _submissionIsTurnedIn(row);
+        final currentTurnedIn = _submissionIsTurnedIn(current);
+        final rowHasFile = _submissionHasFile(row);
+        final currentHasFile = _submissionHasFile(current);
+
+        // Prefer turned-in rows, then rows with a file, then the newest row.
+        if ((rowTurnedIn && !currentTurnedIn) ||
+            (rowTurnedIn == currentTurnedIn && rowHasFile && !currentHasFile)) {
+          submissionsMap[studentId] = row;
+        }
       }
 
       if (mounted) {
         setState(() {
           _students = studentsList;
           _submissions = submissionsMap;
+          if (_selectedStudent != null) {
+            _selectedSubmission = _submissions[_selectedStudent!['id']?.toString()];
+          }
           _isLoadingStudents = false;
         });
       }
     } catch (e) {
+      debugPrint('Load students/submissions error: $e');
       if (mounted) setState(() => _isLoadingStudents = false);
+    }
+  }
+
+  bool _submissionHasFile(Map<String, dynamic>? submission) {
+    final fileUrl = submission?['file_url'];
+    return fileUrl != null && fileUrl.toString().trim().isNotEmpty;
+  }
+
+  bool _submissionIsTurnedIn(Map<String, dynamic>? submission) {
+    final submittedAt = submission?['submitted_at'];
+    return submittedAt != null && submittedAt.toString().trim().isNotEmpty;
+  }
+
+  Future<Map<String, dynamic>?> _loadSingleSubmission(String studentId) async {
+    try {
+      final assessmentId = await _getOrCreateAssessmentId();
+
+      final submissionsData = await _supabase
+          .from('submissions')
+          .select()
+          .eq('assessment_id', assessmentId)
+          .eq('student_id', studentId)
+          .order('submitted_at', ascending: false, nullsFirst: false)
+          .order('created_at', ascending: false, nullsFirst: false);
+
+      Map<String, dynamic>? bestSubmission;
+      for (final item in submissionsData) {
+        final row = Map<String, dynamic>.from(item as Map);
+        final rowTurnedIn = _submissionIsTurnedIn(row);
+        final rowHasFile = _submissionHasFile(row);
+
+        if (rowTurnedIn && rowHasFile) {
+          bestSubmission = row;
+          break;
+        }
+        if (bestSubmission == null) {
+          bestSubmission = row;
+          continue;
+        }
+        if ((rowTurnedIn && !_submissionIsTurnedIn(bestSubmission)) ||
+            (rowTurnedIn == _submissionIsTurnedIn(bestSubmission) &&
+                rowHasFile &&
+                !_submissionHasFile(bestSubmission))) {
+          bestSubmission = row;
+        }
+      }
+
+      if (bestSubmission == null) {
+        if (mounted) {
+          setState(() {
+            _submissions.remove(studentId);
+            _selectedSubmission = null;
+          });
+        }
+        return null;
+      }
+
+      if (mounted) {
+        setState(() {
+          _submissions[studentId] = bestSubmission!;
+          _selectedSubmission = bestSubmission;
+        });
+      }
+      return bestSubmission;
+    } catch (e) {
+      debugPrint('Load single submission error: $e');
+      return _submissions[studentId];
     }
   }
 
@@ -195,6 +320,48 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
     }
   }
 
+  Future<String> _getOrCreateAssessmentId() async {
+    final postId = widget.post['id']?.toString();
+
+    if (postId == null || postId.isEmpty) {
+      throw Exception('Post ID is missing. Cannot create assessment.');
+    }
+
+    final existing = await _supabase
+        .from('assessments')
+        .select('id')
+        .eq('id', postId)
+        .maybeSingle();
+
+    if (existing != null && existing['id'] != null) {
+      return existing['id'].toString();
+    }
+
+    final assessmentData = <String, dynamic>{
+      'id': postId,
+      'course_id': widget.course['id'],
+      'title': widget.post['title'] ?? 'Assignment',
+      'type': widget.post['type'] ?? 'assignment',
+    };
+
+    final moduleId =
+        widget.post['module_id'] ?? widget.post['moduleId'] ?? widget.course['module_id'];
+    if (moduleId != null) {
+      assessmentData['module_id'] = moduleId;
+    }
+
+    try {
+      await _supabase.from('assessments').insert(assessmentData);
+    } on PostgrestException catch (e) {
+      // 23505 means another request already created the same assessment.
+      if (e.code != '23505') {
+        rethrow;
+      }
+    }
+
+    return postId;
+  }
+
   // ════════════════════════════════════════════════════════
   // STUDENT ACTIONS
   // ════════════════════════════════════════════════════════
@@ -202,7 +369,7 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
   Future<void> _pickAndUploadWork() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['pdf', 'doc', 'docx', 'png', 'jpg', 'mp4'],
+      allowedExtensions: ['pdf', 'doc', 'docx', 'png', 'jpg', 'jpeg', 'mp4'],
       withData: true,
     );
     if (result == null || result.files.isEmpty) return;
@@ -211,39 +378,51 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
     setState(() => _isUploadingWork = true);
     try {
       final userId = _supabase.auth.currentUser?.id;
-      if (_currentUserName == null) await _loadCurrentUser();
-      debugPrint('DEBUG >>> userId: $userId'); // ✅ ADD
-      debugPrint('DEBUG >>> userName: $_currentUserName'); // ✅ ADD
-      final bytes = file.bytes ?? await File(file.path!).readAsBytes();
-      final fileName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
-      await _supabase.storage.from('submissions').uploadBinary(fileName, bytes);
-      final url = _supabase.storage.from('submissions').getPublicUrl(fileName);
-      setState(() {
-        _myWorkFileUrl = url;
-        _myWorkFileName = file.name;
-        _isUploadingWork = false;
-      });
+      if (userId == null) {
+        throw Exception('You must be logged in before uploading work.');
+      }
 
-      // Auto-save to submissions table
+      if (_currentUserName == null) await _loadCurrentUser();
+
+      final assessmentId = await _getOrCreateAssessmentId();
+
+      final bytes = file.bytes ?? await File(file.path!).readAsBytes();
+      final safeFileName = file.name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+      final storagePath =
+          '$assessmentId/$userId/${DateTime.now().millisecondsSinceEpoch}_$safeFileName';
+
+      await _supabase.storage.from('submissions').uploadBinary(storagePath, bytes);
+      final url = _supabase.storage.from('submissions').getPublicUrl(storagePath);
+
+      // IMPORTANT:
+      // Uploading only attaches the file. It does NOT turn in the assignment.
+      // The student must press the Turn in button after uploading.
       if (_mySubmission == null) {
         final data = await _supabase
             .from('submissions')
             .insert({
-              'assessment_id': widget.post['id'],
+              'assessment_id': assessmentId,
               'course_id': widget.course['id'],
               'student_id': userId,
-              'student_name': _currentUserName ?? 'Student', // FIX: send name
-              'type': 'assignment', // FIX: send type
+              'student_name': _currentUserName ?? 'Student',
+              'type': widget.post['type'] ?? 'assignment',
               'file_url': url,
               'file_name': file.name,
-              'submitted_at': DateTime.now().toIso8601String(),
-              'max_score': widget.post['points'] ?? 100,
+              'submitted_at': null,
+              'max_score': _maxPoints,
               'is_graded': false,
               'is_returned': false,
             })
             .select()
             .single();
-        setState(() => _mySubmission = Map<String, dynamic>.from(data));
+
+        if (mounted) {
+          setState(() {
+            _mySubmission = Map<String, dynamic>.from(data);
+            _myWorkFileUrl = url;
+            _myWorkFileName = file.name;
+          });
+        }
       } else {
         await _supabase
             .from('submissions')
@@ -251,26 +430,31 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
               'file_url': url,
               'file_name': file.name,
               'student_name': _currentUserName ?? 'Student',
-              'submitted_at': DateTime.now().toIso8601String(),
+              // Keep submitted_at unchanged. If it was not turned in yet, it stays null.
+              // If the teacher already graded it, the UI prevents replacing the file.
             })
             .eq('id', _mySubmission!['id']);
-        setState(() {
-          _mySubmission!['file_url'] = url;
-          _mySubmission!['file_name'] = file.name;
-        });
+
+        if (mounted) {
+          setState(() {
+            _mySubmission!['file_url'] = url;
+            _mySubmission!['file_name'] = file.name;
+            _myWorkFileUrl = url;
+            _myWorkFileName = file.name;
+          });
+        }
       }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: const Text('Work uploaded! ✅'),
+            content: const Text('File attached. Tap Turn in to submit.'),
             backgroundColor: Colors.green.shade700,
             behavior: SnackBarBehavior.floating,
           ),
         );
       }
     } catch (e) {
-      setState(() => _isUploadingWork = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -280,10 +464,14 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
           ),
         );
       }
+    } finally {
+      if (mounted) setState(() => _isUploadingWork = false);
     }
   }
 
   Future<void> _removeWork() async {
+    if (_hasTurnedIn || _isGraded) return;
+
     if (_mySubmission == null) {
       setState(() {
         _myWorkFileUrl = null;
@@ -291,15 +479,18 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
       });
       return;
     }
+
     try {
       await _supabase
           .from('submissions')
-          .update({'file_url': null, 'file_name': null, 'submitted_at': null})
+          .update({'file_url': null, 'file_name': null})
           .eq('id', _mySubmission!['id']);
+
       setState(() {
         _myWorkFileUrl = null;
         _myWorkFileName = null;
         _mySubmission!['file_url'] = null;
+        _mySubmission!['file_name'] = null;
       });
     } catch (e) {
       debugPrint('Remove work: $e');
@@ -307,73 +498,99 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
   }
 
   Future<void> _markAsDone() async {
-    if (_myWorkFileUrl == null && _mySubmission == null) {
-      // Mark as done without file
-      try {
-        final userId = _supabase.auth.currentUser?.id;
-        if (_currentUserName == null) await _loadCurrentUser();
+    try {
+      final userId = _supabase.auth.currentUser?.id;
+      if (userId == null) {
+        throw Exception('You must be logged in before submitting work.');
+      }
 
+      if (_isGraded) return;
+
+      if (_isPastDue) {
+        throw Exception('The deadline has passed. You can no longer turn in this assignment.');
+      }
+
+      final hasUploadedFile = _myWorkFileUrl != null &&
+          _myWorkFileUrl.toString().trim().isNotEmpty &&
+          _myWorkFileName != null &&
+          _myWorkFileName.toString().trim().isNotEmpty;
+      if (!hasUploadedFile) {
+        throw Exception('Please upload your file before turning in the assignment.');
+      }
+
+      if (_currentUserName == null) await _loadCurrentUser();
+      final assessmentId = await _getOrCreateAssessmentId();
+      final now = DateTime.now().toIso8601String();
+
+      if (_mySubmission == null) {
         final data = await _supabase
             .from('submissions')
             .insert({
-              'assessment_id': widget.post['id'],
+              'assessment_id': assessmentId,
               'course_id': widget.course['id'],
               'student_id': userId,
               'student_name': _currentUserName ?? 'Student',
-              'type':
-                  widget.post['type'] ??
-                  'assignment', // Added: Fixes the "type" null error
-              'submitted_at': DateTime.now().toIso8601String(),
-              'max_score': widget.post['points'] ?? 100,
+              'type': widget.post['type'] ?? 'assignment',
+              'file_url': _myWorkFileUrl,
+              'file_name': _myWorkFileName,
+              'submitted_at': now,
+              'max_score': _maxPoints,
               'is_graded': false,
               'is_returned': false,
             })
             .select()
             .single();
 
-        setState(() => _mySubmission = Map<String, dynamic>.from(data));
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text('Assignment marked as done! ✅'),
-              backgroundColor: Colors.green.shade700,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+          setState(() => _mySubmission = Map<String, dynamic>.from(data));
         }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error: $e'),
-              backgroundColor: AppColors.error,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
-      }
-    } else if (_mySubmission != null) {
-      // Unsubmit
-      try {
+      } else {
         await _supabase
             .from('submissions')
-            .delete()
+            .update({
+              'submitted_at': now,
+              'student_name': _currentUserName ?? 'Student',
+              'file_url': _myWorkFileUrl,
+              'file_name': _myWorkFileName,
+              'max_score': _maxPoints,
+              'is_graded': false,
+              'is_returned': false,
+            })
             .eq('id', _mySubmission!['id']);
-        setState(() {
-          _mySubmission = null;
-          _myWorkFileUrl = null;
-          _myWorkFileName = null;
-        });
+
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Assignment unsubmitted.'),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+          setState(() {
+            _mySubmission!['submitted_at'] = now;
+            _mySubmission!['file_url'] = _myWorkFileUrl;
+            _mySubmission!['file_name'] = _myWorkFileName;
+            _mySubmission!['max_score'] = _maxPoints;
+            _mySubmission!['is_graded'] = false;
+            _mySubmission!['is_returned'] = false;
+          });
         }
-      } catch (e) {
-        debugPrint('Unsubmit: $e');
+      }
+
+      await _loadMySubmission();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Assignment turned in! ✅'),
+            backgroundColor: Colors.green.shade700,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Turn in error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: AppColors.error,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
     }
   }
@@ -441,11 +658,11 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
 
   Future<void> _gradeSubmission(String studentId) async {
     final score = int.tryParse(_gradeController.text.trim());
-    if (score == null || score < 0 || score > (widget.post['points'] ?? 100)) {
+    if (score == null || score < 0 || score > _maxPoints) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Enter a valid score (0-${widget.post['points'] ?? 100})',
+            'Enter a valid score (0-$_maxPoints)',
           ),
           backgroundColor: AppColors.error,
           behavior: SnackBarBehavior.floating,
@@ -455,8 +672,32 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
     }
     setState(() => _isGrading = true);
     try {
-      final submission = _submissions[studentId];
-      if (submission == null) return;
+      final submission =
+          await _loadSingleSubmission(studentId) ?? _submissions[studentId] ?? _selectedSubmission;
+      if (!_submissionIsTurnedIn(submission)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('This student has not turned in the assignment yet.'),
+              backgroundColor: AppColors.error,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        return;
+      }
+      if (!_submissionHasFile(submission)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('This student turned in the assignment, but no file is attached.'),
+              backgroundColor: AppColors.error,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        return;
+      }
       await _supabase
           .from('submissions')
           .update({
@@ -465,21 +706,20 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
             'is_returned': true,
             'returned_at': DateTime.now().toIso8601String(),
           })
-          .eq('id', submission['id']);
+          .eq('id', submission!['id']);
       await _supabase.from('notifications').insert({
         'user_id': studentId,
         'course_id': widget.course['id'],
         'post_id': widget.post['id'],
         'type': 'private_comment',
         'title': '${widget.post['title']} has been graded',
-        'body': 'Your score: $score/${widget.post['points'] ?? 100}',
+        'body': 'Your score: $score/$_maxPoints',
         'created_at': DateTime.now().toIso8601String(),
       });
       await _loadStudentsAndSubmissions();
       if (mounted) {
         setState(() {
-          _selectedStudent = null;
-          _selectedSubmission = null;
+          _selectedSubmission = _submissions[studentId] ?? _selectedSubmission;
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -554,9 +794,21 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
     return 'Due ${months[date.month - 1]} ${date.day}, $hour:$min $ampm';
   }
 
-  bool get _hasTurnedIn => _mySubmission != null;
+  DateTime? get _dueDate {
+    final value = widget.post['due_date'];
+    if (value == null) return null;
+    return DateTime.tryParse(value.toString());
+  }
+
+  bool get _isPastDue {
+    final due = _dueDate;
+    return due != null && DateTime.now().isAfter(due);
+  }
+
+  bool get _hasTurnedIn => _mySubmission?['submitted_at'] != null;
+  bool get _hasAttachedFile => _myWorkFileUrl != null && _myWorkFileName != null;
   bool get _isGraded => _mySubmission?['is_graded'] == true;
-  int get _maxPoints => widget.post['points'] ?? 100;
+  int get _maxPoints => int.tryParse((widget.post['points'] ?? 100).toString()) ?? 100;
   int get _turnedInCount =>
       _submissions.values.where((s) => s['submitted_at'] != null).length;
   int get _gradedCount =>
@@ -912,6 +1164,8 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                         ? 'Graded'
                         : _hasTurnedIn
                         ? 'Turned in'
+                        : _hasAttachedFile
+                        ? 'Attached'
                         : 'Assigned',
                     style: TextStyle(
                       fontFamily: 'Poppins',
@@ -921,6 +1175,8 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                           ? AppColors.primary
                           : _hasTurnedIn
                           ? Colors.green
+                          : _hasAttachedFile
+                          ? AppColors.primary
                           : context.textSecondary,
                     ),
                   ),
@@ -946,46 +1202,65 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: context.bgColor,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: context.borderColor),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.insert_drive_file_outlined,
-                          color: AppColors.primary,
-                          size: 20,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            _myWorkFileName!,
-                            style: TextStyle(
-                              fontFamily: 'Poppins',
-                              fontSize: 13,
-                              color: context.textPrimary,
+                  GestureDetector(
+                    onTap: _myWorkFileUrl == null
+                        ? null
+                        : () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => FileViewerScreen(
+                                  url: _myWorkFileUrl!,
+                                  fileName: _myWorkFileName!,
+                                ),
+                              ),
                             ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: context.bgColor,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: context.borderColor),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.insert_drive_file_outlined,
+                            color: AppColors.primary,
+                            size: 20,
                           ),
-                        ),
-                        if (!_hasTurnedIn && canSubmit)
-                          GestureDetector(
-                            onTap: _removeWork,
-                            child: Icon(
-                              Icons.close,
-                              color: context.textHint,
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              _myWorkFileName!,
+                              style: TextStyle(
+                                fontFamily: 'Poppins',
+                                fontSize: 13,
+                                color: context.textPrimary,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (!_hasTurnedIn && canSubmit && !_isGraded)
+                            GestureDetector(
+                              onTap: _removeWork,
+                              child: Icon(
+                                Icons.close,
+                                color: context.textHint,
+                                size: 18,
+                              ),
+                            )
+                          else
+                            const Icon(
+                              Icons.visibility_outlined,
+                              color: AppColors.primary,
                               size: 18,
                             ),
-                          ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -1051,7 +1326,7 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                 const SizedBox(height: 12),
 
                 // Add work button
-                if (canSubmit && !_hasTurnedIn)
+                if (canSubmit && !_hasTurnedIn && !_isGraded)
                   SizedBox(
                     width: double.infinity,
                     height: 48,
@@ -1099,27 +1374,31 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                   height: 48,
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: _hasTurnedIn
+                      backgroundColor: _hasTurnedIn || _isGraded
                           ? context.cardColor
                           : AppColors.primary,
-                      foregroundColor: _hasTurnedIn
+                      foregroundColor: _hasTurnedIn || _isGraded
                           ? AppColors.primary
                           : Colors.white,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(24),
                         side: BorderSide(
-                          color: _hasTurnedIn
+                          color: _hasTurnedIn || _isGraded
                               ? AppColors.primary
                               : Colors.transparent,
                         ),
                       ),
                       elevation: 0,
                     ),
-                    onPressed: (!canSubmit && !_hasTurnedIn)
+                    onPressed: _isGraded || _hasTurnedIn || !canSubmit
                         ? null
                         : _markAsDone,
                     child: Text(
-                      _hasTurnedIn ? 'Unsubmit' : 'Mark as done',
+                      _isGraded
+                          ? 'Graded'
+                          : _hasTurnedIn
+                          ? 'Turned in'
+                          : 'Turn in',
                       style: const TextStyle(
                         fontFamily: 'Poppins',
                         fontWeight: FontWeight.w700,
@@ -1601,7 +1880,20 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
 
     final turnedInStudents = _students
         .where((s) => _submissions[s['id']]?['submitted_at'] != null)
-        .toList();
+        .toList()
+      ..sort((a, b) {
+        final aSub = _submissions[a['id']];
+        final bSub = _submissions[b['id']];
+        final aGraded = aSub?['is_graded'] == true;
+        final bGraded = bSub?['is_graded'] == true;
+        if (aGraded && bGraded) {
+          final aScore = int.tryParse((aSub?['score'] ?? 0).toString()) ?? 0;
+          final bScore = int.tryParse((bSub?['score'] ?? 0).toString()) ?? 0;
+          return bScore.compareTo(aScore);
+        }
+        if (aGraded != bGraded) return aGraded ? -1 : 1;
+        return (a['name'] ?? '').toString().compareTo((b['name'] ?? '').toString());
+      });
     final assignedStudents = _students
         .where((s) => _submissions[s['id']]?['submitted_at'] == null)
         .toList();
@@ -1871,7 +2163,8 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
   List<Widget> _buildStudentRows(List<Map<String, dynamic>> students) {
     return students.map((student) {
       final submission = _submissions[student['id']];
-      final hasTurnedIn = submission?['submitted_at'] != null;
+      final hasTurnedIn = _submissionIsTurnedIn(submission);
+      final hasFile = _submissionHasFile(submission);
       final isGradedS = submission?['is_graded'] == true;
 
       return ListTile(
@@ -1900,9 +2193,11 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
         ),
         trailing: Text(
           isGradedS
-              ? '${submission!['score']}/${widget.post['points'] ?? 100}'
+              ? '${submission!['score']}/$_maxPoints'
               : hasTurnedIn
               ? 'Turned in'
+              : hasFile
+              ? 'Draft attached'
               : 'Assigned',
           style: TextStyle(
             fontFamily: 'Poppins',
@@ -1911,16 +2206,24 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                 ? AppColors.primary
                 : hasTurnedIn
                 ? Colors.green
+                : hasFile
+                ? const Color(0xFFFF6B35)
                 : context.textSecondary,
           ),
         ),
-        onTap: () {
+        onTap: () async {
           setState(() {
             _selectedStudent = student;
             _selectedSubmission = submission;
-            if (submission?['score'] != null)
+            _gradeController.clear();
+            if (submission?['score'] != null) {
               _gradeController.text = submission!['score'].toString();
+            }
           });
+          final freshSubmission = await _loadSingleSubmission(student['id']);
+          if (freshSubmission?['score'] != null && mounted) {
+            setState(() => _gradeController.text = freshSubmission!['score'].toString());
+          }
           _loadPrivateComments(student['id']);
         },
       );
@@ -1929,8 +2232,9 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
 
   Widget _buildInstructorStudentView() {
     final student = _selectedStudent!;
-    final submission = _selectedSubmission;
-    final hasTurnedIn = submission?['submitted_at'] != null;
+    final submission = _submissions[student['id']] ?? _selectedSubmission;
+    final hasTurnedIn = _submissionIsTurnedIn(submission);
+    final hasFile = _submissionHasFile(submission);
     final isGradedS = submission?['is_graded'] == true;
 
     return SingleChildScrollView(
@@ -1983,12 +2287,18 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                             ),
                           ),
                           Text(
-                            hasTurnedIn ? 'Turned in' : 'Not submitted',
+                            hasTurnedIn
+                                ? 'Turned in'
+                                : hasFile
+                                ? 'File attached, not turned in'
+                                : 'Not submitted',
                             style: TextStyle(
                               fontFamily: 'Poppins',
                               fontSize: 12,
                               color: hasTurnedIn
                                   ? Colors.green
+                                  : hasFile
+                                  ? const Color(0xFFFF6B35)
                                   : context.textHint,
                             ),
                           ),
@@ -1997,12 +2307,12 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                     ),
                   ],
                 ),
-                if (hasTurnedIn && submission!['file_url'] != null) ...[
+                if (submission != null && hasFile) ...[
                   const SizedBox(height: 14),
                   Divider(color: context.borderColor, height: 1),
                   const SizedBox(height: 12),
                   Text(
-                    'Submitted Work',
+                    hasTurnedIn ? 'Submitted Work' : 'Attached File (Not Turned In Yet)',
                     style: TextStyle(
                       fontFamily: 'Poppins',
                       fontSize: 13,
@@ -2046,6 +2356,28 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                   ),
                 ),
                 const SizedBox(height: 12),
+                if (!hasTurnedIn) ...[
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: context.bgColor,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: context.borderColor),
+                    ),
+                    child: Text(
+                      hasFile
+                          ? 'The student has an attached file, but it is not turned in yet. You can view the file, but grading is enabled only after the student taps Turn in.'
+                          : 'No file has been attached or turned in yet.',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 12,
+                        color: context.textSecondary,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 if (isGradedS) ...[
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -2068,7 +2400,7 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                           ),
                         ),
                         Text(
-                          '${submission!['score']}/${widget.post['points'] ?? 100}',
+                          '${submission!['score']}/$_maxPoints',
                           style: const TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 18,
@@ -2094,7 +2426,7 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                         ),
                         decoration: InputDecoration(
                           labelText:
-                              '${isGradedS ? 'Update' : 'Set'} Score (0-${widget.post['points'] ?? 100})',
+                              '${isGradedS ? 'Update' : 'Set'} Score (0-$_maxPoints)',
                           labelStyle: TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 13,
@@ -2105,7 +2437,7 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                             color: context.textHint,
                             size: 20,
                           ),
-                          suffixText: '/ ${widget.post['points'] ?? 100}',
+                          suffixText: '/ $_maxPoints',
                           suffixStyle: TextStyle(
                             fontFamily: 'Poppins',
                             color: context.textSecondary,
@@ -2145,7 +2477,7 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                         minimumSize: const Size(80, 52),
                         elevation: 0,
                       ),
-                      onPressed: _isGrading
+                      onPressed: _isGrading || !hasTurnedIn
                           ? null
                           : () => _gradeSubmission(student['id']),
                       child: _isGrading
@@ -2158,7 +2490,11 @@ class _AssignmentDetailScreenState extends State<AssignmentDetailScreen>
                               ),
                             )
                           : Text(
-                              isGradedS ? 'Update' : 'Grade',
+                              !hasTurnedIn
+                                  ? 'Waiting'
+                                  : isGradedS
+                                  ? 'Update'
+                                  : 'Grade',
                               style: const TextStyle(
                                 fontFamily: 'Poppins',
                                 fontWeight: FontWeight.w700,

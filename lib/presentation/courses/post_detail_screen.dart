@@ -10,6 +10,7 @@ import 'dart:convert';
 import '../../core/constants/app_colors.dart';
 import '../../core/theme/theme_extensions.dart';
 import 'file_viewer_screen.dart';
+import 'dart:async';
 
 class PostDetailScreen extends StatefulWidget {
   final Map<String, dynamic> post;
@@ -36,6 +37,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
   bool _materialSaved = false;
   bool _assessmentSaved = false;
   String? _currentUserName;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
@@ -43,10 +45,17 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     _loadComments();
     _loadCurrentUser();
     _checkAlreadySaved();
+
+     _refreshTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+      if (mounted) setState(() {}); 
+    });
+  
   }
+
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
     _commentController.dispose();
     super.dispose();
   }
@@ -235,13 +244,24 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
 
   // ─── Helpers ───
   String _getScheduleStatus(String? scheduledTime) {
-    if (scheduledTime == null) return 'none';
-    final scheduled = DateTime.parse(scheduledTime);
+  if (scheduledTime == null) return 'none';
+  
+  try {
+    // 1. Parse and convert back to YOUR LOCAL TIME
+    final scheduled = DateTime.parse(scheduledTime).toLocal(); 
+    
+    // 2. Get current device time
     final now = DateTime.now();
-    if (now.isBefore(scheduled)) return 'upcoming';
-    if (now.isAfter(scheduled.add(const Duration(hours: 2)))) return 'ended';
-    return 'live';
+    
+    final int diff = now.difference(scheduled).inMinutes;
+
+    if (diff < 0) return 'upcoming';
+    if (diff >= 0 && diff <= 15) return 'live';
+    return 'ended';
+  } catch (e) {
+    return 'none';
   }
+}
 
   String _formatScheduleTime(String? scheduledTime) {
     if (scheduledTime == null) return '';
@@ -632,38 +652,37 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
   }
 
   Widget _build3DButton(String scheduledTime) {
-    final status = _getScheduleStatus(scheduledTime);
-    final isLive = status == 'live';
-    final Color btnColor = isLive ? const Color(0xFF22C55E) : Colors.grey;
-    final icon = isLive ? Icons.videogame_asset_rounded : Icons.videogame_asset_outlined;
+  final status = _getScheduleStatus(scheduledTime);
+  final isLive = status == 'live';
+  final isUpcoming = status == 'upcoming';
+  final Color btnColor = isLive ? const Color(0xFF22C55E) : Colors.grey;
 
-    return GestureDetector(
-      onTap: isLive ? () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Launching 3D Classroom...'))) : null,
-      child: Container(
-        width: double.infinity, padding: const EdgeInsets.symmetric(vertical: 16),
-        decoration: BoxDecoration(
-          color: isLive ? btnColor : btnColor.withValues(alpha: 0.5),
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: isLive ? [BoxShadow(color: btnColor.withValues(alpha: 0.3), blurRadius: 12, offset: const Offset(0, 4))] : [],
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: Colors.white, size: 24),
-            const SizedBox(width: 12),
-            Column(
-              children: [
-                Text(isLive ? 'Join 3D Classroom' : '3D Meet Scheduled', 
-                  style: const TextStyle(fontFamily: 'Poppins', fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white)),
-                Text(isLive ? 'Session is live now!' : _formatScheduleTime(scheduledTime), 
-                  style: TextStyle(fontFamily: 'Poppins', fontSize: 11, color: Colors.white.withValues(alpha: 0.8))),
-              ],
-            ),
-          ],
-        ),
+  return GestureDetector(
+    onTap: isLive 
+    ? () {
+        debugPrint("Button Clicked while LIVE"); // Add this to test
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Launching 3D Classroom...'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    : null,
+    child: Container(
+      width: double.infinity, padding: const EdgeInsets.symmetric(vertical: 16),
+      decoration: BoxDecoration(
+        color: isLive ? btnColor : btnColor.withOpacity(0.5),
+        borderRadius: BorderRadius.circular(16),
       ),
-    );
-  }
+      child: Column(
+        children: [
+          Text(isLive ? 'Join 3D Classroom' : isUpcoming ? '3D Meet Scheduled' : 'Session Expired', 
+            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+          Text(isLive ? 'Session is live!' : _formatScheduleTime(scheduledTime), 
+            style: const TextStyle(fontSize: 11, color: Colors.white70)),
+        ],
+      ),
+    ),
+  );
+}
 
   IconData _getPostIcon(String type) {
     switch (type) {
